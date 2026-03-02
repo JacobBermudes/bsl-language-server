@@ -21,6 +21,7 @@
  */
 package com.github._1c_syntax.bsl.languageserver;
 
+import com.github._1c_syntax.bsl.languageserver.configuration.Language;
 import com.github._1c_syntax.bsl.languageserver.configuration.LanguageServerConfiguration;
 import com.github._1c_syntax.bsl.languageserver.context.ServerContext;
 import com.github._1c_syntax.bsl.languageserver.jsonrpc.DiagnosticParams;
@@ -141,8 +142,51 @@ public class BSLLanguageServer implements LanguageServer, ProtocolExtension {
   }
 
   private void setConfigurationRoot(InitializeParams params) {
+    // Check if configuration root is explicitly provided in initialization options
+    Path explicitConfigurationRoot = null;
+    
+    var initializationOptions = params.getInitializationOptions();
+    if (initializationOptions instanceof java.util.Map) {
+      @SuppressWarnings("unchecked")
+      var optionsMap = (java.util.Map<String, Object>) initializationOptions;
+      
+      // Get configurationRoot if provided
+      if (optionsMap.containsKey("configurationRoot")) {
+        var configRoot = optionsMap.get("configurationRoot");
+        if (configRoot instanceof String) {
+          explicitConfigurationRoot = new File((String) configRoot).toPath();
+          LOGGER.info("Explicit configuration root from initializationOptions: {}", explicitConfigurationRoot);
+          // If explicitly provided, use it directly
+          context.setConfigurationRoot(explicitConfigurationRoot);
+        }
+      }
+      
+      // Set language if provided
+      if (optionsMap.containsKey("language")) {
+        var lang = optionsMap.get("language");
+        if (lang instanceof String) {
+          var langStr = ((String) lang).toLowerCase();
+          if ("en".equals(langStr) || "english".equals(langStr)) {
+            configuration.setLanguage(Language.EN);
+          } else if ("ru".equals(langStr) || "russian".equals(langStr)) {
+            configuration.setLanguage(Language.RU);
+          } else {
+            LOGGER.warn("Unknown language in initialization options: {}", lang);
+          }
+        }
+      }
+    }
+    
+    // If explicit configuration root was provided, we're done
+    if (explicitConfigurationRoot != null) {
+      LOGGER.info("Using explicit configuration root: {}", explicitConfigurationRoot);
+      return;
+    }
+    
+    // Otherwise, use the workspace folder based approach
     var workspaceFolders = params.getWorkspaceFolders();
     if (workspaceFolders == null || workspaceFolders.isEmpty()) {
+      LOGGER.warn("No workspace folders and no explicit configuration root provided");
       return;
     }
 
@@ -158,11 +202,13 @@ public class BSLLanguageServer implements LanguageServer, ProtocolExtension {
     var configurationRoot = LanguageServerConfiguration.getCustomConfigurationRoot(
       configuration,
       rootPath);
+    LOGGER.info("Configuration root from workspace: {}", configurationRoot);
     context.setConfigurationRoot(configurationRoot);
   }
 
   @Override
   public void initialized(InitializedParams params) {
+    LOGGER.info("=== Server initialized. Starting async context population");
     var factory = new NamedForkJoinWorkerThreadFactory("populate-context-");
     var executorService = new ForkJoinPool(ForkJoinPool.getCommonPoolParallelism(), factory, null, true);
     CompletableFuture
@@ -170,7 +216,9 @@ public class BSLLanguageServer implements LanguageServer, ProtocolExtension {
       .whenComplete((Void unused, @Nullable Throwable throwable) -> {
         executorService.shutdown();
         if (throwable != null) {
-          LOGGER.error("Error populating context", throwable);
+          LOGGER.error("ERROR: Failed to populate context", throwable);
+        } else {
+          LOGGER.info("=== Async context population completed successfully");
         }
       });
   }

@@ -96,49 +96,74 @@ public class ServerContext {
       return;
     }
 
+    var startTime = System.currentTimeMillis();
+    LOGGER.info("=== Starting context population from: {}", configurationRoot);
+
     var workDoneProgressReporter = workDoneProgressHelper.createProgress(0, "");
     workDoneProgressReporter.beginProgress(getMessage("populateFindFiles"));
 
-    LOGGER.debug("Finding files to populate context...");
+    LOGGER.info("Finding .bsl and .os files in: {}", configurationRoot);
     var files = (List<File>) FileUtils.listFiles(
       configurationRoot.toFile(),
       new String[]{"bsl", "os"},
       true
     );
+    LOGGER.info("Found {} files to index", files.size());
     workDoneProgressReporter.endProgress("");
+    
     populateContext(files);
+    
+    var elapsed = System.currentTimeMillis() - startTime;
+    LOGGER.info("=== Context population completed in {} ms", elapsed);
   }
 
   public void populateContext(List<File> files) {
+    var startTime = System.currentTimeMillis();
+    LOGGER.info("=== Starting parallel indexing of {} files", files.size());
+    
     var workDoneProgressReporter = workDoneProgressHelper.createProgress(
       files.size(),
       getMessage("populateFilesPostfix")
     );
     workDoneProgressReporter.beginProgress(getMessage("populatePopulatingContext"));
 
-    LOGGER.debug("Populating context...");
-
+    var processedCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    var errorCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    
     files.parallelStream().forEach((File file) -> {
-
-      workDoneProgressReporter.tick();
-
-      var uri = Absolute.uri(file.toURI());
-      var lock = getDocumentLock(uri);
-      lock.writeLock().lock();
       try {
-        var documentContext = documents.get(uri);
-        if (documentContext == null) {
-          documentContext = createDocumentContext(uri);
-          rebuildDocument(documentContext);
-          documentContext.freezeComputedData();
-          tryClearDocument(documentContext);
+        workDoneProgressReporter.tick();
+
+        var uri = Absolute.uri(file.toURI());
+        var lock = getDocumentLock(uri);
+        lock.writeLock().lock();
+        try {
+          var documentContext = documents.get(uri);
+          if (documentContext == null) {
+            documentContext = createDocumentContext(uri);
+            rebuildDocument(documentContext);
+            documentContext.freezeComputedData();
+            tryClearDocument(documentContext);
+          }
+        } finally {
+          lock.writeLock().unlock();
         }
-      } finally {
-        lock.writeLock().unlock();
+        
+        int processed = processedCount.incrementAndGet();
+        if (processed % 100 == 0 || processed == files.size()) {
+          LOGGER.debug("Indexed {} / {} files", processed, files.size());
+        }
+      } catch (Exception e) {
+        errorCount.incrementAndGet();
+        LOGGER.warn("Error indexing file: {}", file, e);
       }
     });
 
     workDoneProgressReporter.endProgress(getMessage("populateContextPopulated"));
+    var elapsed = System.currentTimeMillis() - startTime;
+    LOGGER.info("=== Context populated successfully");
+    LOGGER.info("Total documents indexed: {}. Errors: {}. Time: {} ms", 
+      documents.size(), errorCount.get(), elapsed);
     LOGGER.debug("Context populated.");
   }
 
@@ -397,6 +422,9 @@ public class ServerContext {
       return (CF) MDClasses.createConfiguration();
     }
 
+    var startTime = System.currentTimeMillis();
+    LOGGER.info("=== Starting configuration metadata parsing from: {}", configurationRoot);
+
     var progress = workDoneProgressHelper.createProgress(0, "");
     progress.beginProgress(getMessage("computeConfigurationMetadata"));
 
@@ -405,11 +433,25 @@ public class ServerContext {
 
     CF configuration;
     try {
+      LOGGER.info("Submitting configuration parse task to thread pool...");
       configuration = (CF) executorService.submit(
         () -> MDClasses.createSolution(configurationRoot, SOLUTION_READ_SETTINGS)).get();
+      LOGGER.info("Configuration metadata parsed successfully");
     } catch (ExecutionException e) {
-      LOGGER.error("Can't parse configuration metadata. Execution exception: {}", e.getMessage(), e);
-      configuration = (CF) MDClasses.createConfiguration();
+      var cause = e.getCause();
+      if (cause instanceof java.io.UncheckedIOException ioException) {
+        if (ioException.getCause() instanceof java.nio.file.AccessDeniedException accessDenied) {
+          LOGGER.warn("Access denied to file during metadata parsing (likely .git directory): {}. Skipping metadata parsing.", 
+            accessDenied.getFile());
+          configuration = (CF) MDClasses.createConfiguration();
+        } else {
+          LOGGER.error("Can't parse configuration metadata. IO exception: {}", e.getMessage(), e);
+          configuration = (CF) MDClasses.createConfiguration();
+        }
+      } else {
+        LOGGER.error("Can't parse configuration metadata. Execution exception: {}", e.getMessage(), e);
+        configuration = (CF) MDClasses.createConfiguration();
+      }
     } catch (InterruptedException e) {
       LOGGER.error("Can't parse configuration metadata. Interrupted exception: {}", e.getMessage(), e);
       configuration = (CF) MDClasses.createConfiguration();
@@ -419,6 +461,8 @@ public class ServerContext {
     }
 
     progress.endProgress(getMessage("computeConfigurationMetadataDone"));
+    var elapsed = System.currentTimeMillis() - startTime;
+    LOGGER.info("=== Configuration metadata parsing completed in {} ms", elapsed);
 
     return configuration;
   }

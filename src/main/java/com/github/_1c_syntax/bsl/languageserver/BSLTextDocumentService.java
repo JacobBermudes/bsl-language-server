@@ -248,16 +248,29 @@ public class BSLTextDocumentService implements TextDocumentService, ProtocolExte
   public CompletableFuture<List<Either<SymbolInformation, DocumentSymbol>>> documentSymbol(
     DocumentSymbolParams params
   ) {
-    var documentContext = context.getDocumentUnsafe(params.getTextDocument().getUri());
+    var uri = params.getTextDocument().getUri();
+    LOGGER.info("=== documentSymbol request for: {}", uri);
+    
+    var documentContext = context.getDocumentUnsafe(uri);
     if (documentContext == null) {
+      LOGGER.warn("Document not found in context: {}. Available documents: {}", uri, 
+        context.getDocuments().keySet().stream()
+          .map(Object::toString)
+          .limit(10)
+          .toList());
       return CompletableFuture.completedFuture(null);
     }
 
+    LOGGER.info("Document found, retrieving symbols...");
     return withFreshDocumentContext(
       documentContext,
-      () -> documentSymbolProvider.getDocumentSymbols(documentContext).stream()
-        .map(Either::<SymbolInformation, DocumentSymbol>forRight)
-        .toList()
+      () -> {
+        var symbols = documentSymbolProvider.getDocumentSymbols(documentContext).stream()
+          .map(Either::<SymbolInformation, DocumentSymbol>forRight)
+          .toList();
+        LOGGER.info("Found {} symbols", symbols.size());
+        return symbols;
+      }
     );
   }
 
@@ -632,40 +645,71 @@ public class BSLTextDocumentService implements TextDocumentService, ProtocolExte
 
   @Override
   public CompletableFuture<Diagnostics> diagnostics(DiagnosticParams params) {
-    var documentContext = context.getDocumentUnsafe(params.getTextDocument().getUri());
-    if (documentContext == null) {
-      return CompletableFuture.completedFuture(Diagnostics.EMPTY);
-    }
-
-    return withFreshDocumentContext(
-      documentContext,
-      () -> {
-        var diagnostics = documentContext.getDiagnostics();
-
-        var range = params.getRange();
-        if (range != null) {
-          diagnostics = diagnostics.stream()
-            .filter(diagnostic -> Ranges.containsRange(range, diagnostic.getRange()))
-            .toList();
-        }
-        return new Diagnostics(diagnostics, documentContext.getVersion());
+    try {
+      if (params == null || params.getTextDocument() == null) {
+        LOGGER.error("diagnostics: params or textDocument is null");
+        return CompletableFuture.completedFuture(Diagnostics.EMPTY);
       }
-    );
+      
+      var uri = params.getTextDocument().getUri();
+      LOGGER.info("=== diagnostics request for: {}", uri);
+      
+      var documentContext = context.getDocumentUnsafe(uri);
+      if (documentContext == null) {
+        LOGGER.warn("Document not found in context: {}", uri);
+        return CompletableFuture.completedFuture(Diagnostics.EMPTY);
+      }
+
+      return withFreshDocumentContext(
+        documentContext,
+        () -> {
+          var diagnostics = documentContext.getDiagnostics();
+
+          var range = params.getRange();
+          if (range != null) {
+            diagnostics = diagnostics.stream()
+              .filter(diagnostic -> Ranges.containsRange(range, diagnostic.getRange()))
+              .toList();
+          }
+          LOGGER.info("Found {} diagnostics", diagnostics.size());
+          return new Diagnostics(diagnostics, documentContext.getVersion());
+        }
+      );
+    } catch (Exception e) {
+      LOGGER.error("ERROR in diagnostics: {}", e.getMessage(), e);
+      return CompletableFuture.failedFuture(e);
+    }
   }
 
   @Override
   public CompletableFuture<DocumentDiagnosticReport> diagnostic(DocumentDiagnosticParams params) {
-    var documentContext = context.getDocumentUnsafe(params.getTextDocument().getUri());
-    if (documentContext == null) {
-      return CompletableFuture.completedFuture(
-        new DocumentDiagnosticReport(new RelatedFullDocumentDiagnosticReport(Collections.emptyList()))
-      );
-    }
+    try {
+      if (params == null || params.getTextDocument() == null) {
+        LOGGER.error("diagnostic: params or textDocument is null");
+        return CompletableFuture.completedFuture(
+          new DocumentDiagnosticReport(new RelatedFullDocumentDiagnosticReport(Collections.emptyList()))
+        );
+      }
+      
+      var uri = params.getTextDocument().getUri();
+      LOGGER.info("=== diagnostic request for: {}", uri);
+      
+      var documentContext = context.getDocumentUnsafe(uri);
+      if (documentContext == null) {
+        LOGGER.warn("Document not found in context: {}", uri);
+        return CompletableFuture.completedFuture(
+          new DocumentDiagnosticReport(new RelatedFullDocumentDiagnosticReport(Collections.emptyList()))
+        );
+      }
 
-    return withFreshDocumentContext(
-      documentContext,
-      () -> diagnosticProvider.getDiagnostic(documentContext)
-    );
+      return withFreshDocumentContext(
+        documentContext,
+        () -> diagnosticProvider.getDiagnostic(documentContext)
+      );
+    } catch (Exception e) {
+      LOGGER.error("ERROR in diagnostic: {}", e.getMessage(), e);
+      return CompletableFuture.failedFuture(e);
+    }
   }
 
   @Override
